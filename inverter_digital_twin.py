@@ -1,40 +1,20 @@
-# inverter_digital_twin_sidebar.py
-
 import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.express as px
-from datetime import datetime
+from datetime import datetime, timedelta
 
-# ----- Constants -----
-PDC0 = 6000         # Rated DC capacity per inverter (W)
-GAMMA = -0.004      # Temp coefficient of power (per °C)
-INV_EFF = 0.95      # Assumed inverter efficiency
+# ---------- Config ----------
+st.set_page_config(page_title="Solar Digital Twin Dashboard", layout="wide")
 
-# ----- Streamlit Config -----
-st.set_page_config(page_title="Digital Twin – Inverter Performance", layout="wide")
+# ---------- App Title ----------
+st.title("Solar Digital Twin Dashboard")
 
-# ----- Sidebar Navigation -----
-st.sidebar.title("Digital Twin Dashboard")
-section = st.sidebar.radio("Go to", ["Overview", "Performance", "Digital Twin", "Alerts"])
-
-# ----- File Upload (in Sidebar) -----
-uploaded_files = st.sidebar.file_uploader(
-    "Upload Inverter CSV File(s)",
-    type="csv",
-    accept_multiple_files=True
-)
-
-# ----- Plant Info -----
-plant_info = {
-    "Plant Name": "Sunil Kumar Dubey",
-    "Location": "Village Deori, Sagar, MP",
-    "Capacity": "2.0 MW AC / 2.4 MWp DC",
-    "Panels": "Pahal TOPCon 600 Wp (G2G)",
-    "Inverters": "Sungrow (String Type)"
-}
+# ---------- Upload Data ----------
+uploaded_files = st.file_uploader("Upload Inverter CSV File(s)", type="csv", accept_multiple_files=True)
 
 if uploaded_files:
+    # ---------- Load Data ----------
     dfs = {}
     for file in uploaded_files:
         try:
@@ -42,120 +22,126 @@ if uploaded_files:
             df = df.set_index("Time")
             required = ["Irradiance", "Module_Temp", "V_dc", "I_dc", "P_ac"]
             if not all(col in df.columns for col in required):
-                st.error(f"File {file.name} missing columns: {set(required) - set(df.columns)}")
+                st.error(f"File {file.name} is missing columns: {set(required) - set(df.columns)}")
                 continue
             dfs[file.name] = df
         except Exception as e:
-            st.error(f"Error reading {file.name}: {e}")
+            st.error(f"Error reading file {file.name}: {e}")
 
     if not dfs:
         st.warning("No valid files to process.")
         st.stop()
 
-    all_mins = [df.index.min().date() for df in dfs.values()]
-    all_maxs = [df.index.max().date() for df in dfs.values()]
-    min_date, max_date = min(all_mins), max(all_maxs)
+    # ---------- Sidebar Navigation ----------
+    st.sidebar.title("Navigation")
+    selected_section = st.sidebar.radio("Go to", ["Overview", "Performance", "Digital Twin", "Alerts", "Predictions"])
 
-    start_date, end_date = st.sidebar.date_input(
-        "Select Date Range",
-        value=(min_date, max_date),
-        min_value=min_date,
-        max_value=max_date
-    )
-    if isinstance(start_date, tuple): start_date, end_date = start_date
+    # ---------- Combine All Data ----------
+    PDC0 = 6000
+    GAMMA = -0.004
+    INV_EFF = 0.95
 
-    # ----- Process Data -----
     processed = []
     for name, df in dfs.items():
-        df = df.loc[(df.index.date >= start_date) & (df.index.date <= end_date)].copy()
-        if df.empty: continue
         df["Expected_AC_Power"] = (
             PDC0 * (df["Irradiance"] / 1000) * (1 + GAMMA * (df["Module_Temp"] - 25)) * INV_EFF
         )
         df["Deviation (%)"] = 100 * (df["P_ac"] - df["Expected_AC_Power"]) / df["Expected_AC_Power"].replace(0, 1)
         df["Status"] = df["Deviation (%)"].apply(lambda x: "OK" if abs(x) < 10 else "Alert")
         df["Inverter"] = name
+        df["timestamp"] = df.index
         processed.append(df)
 
-    if not processed:
-        st.warning("No data in selected range.")
-        st.stop()
-
     df_all = pd.concat(processed)
-    inverter_names = df_all["Inverter"].unique().tolist()
-    selected = st.sidebar.multiselect("Select Inverters", inverter_names, default=inverter_names)
 
-    df_sel = df_all[df_all["Inverter"].isin(selected)]
+    # ---------- Overview ----------
+    if selected_section == "Overview":
+        st.subheader("Plant Overview")
+        plant_info = {
+            "Plant Name": "Sunil Kumar Dubey",
+            "Location": "Village Deori, Sagar, MP",
+            "Capacity": "2.0 MW AC / 2.4 MWp DC",
+            "Panels": "Pahal TOPCon 600 Wp (G2G)",
+            "Inverters": "Sungrow (String Type)"
+        }
 
-    # ----- Overview -----
-    if section == "Overview":
-        st.title("Plant Overview")
         col1, col2 = st.columns(2)
         with col1:
-            for k in ["Plant Name", "Location", "Capacity"]:
-                st.metric(k, plant_info[k])
+            for key, val in list(plant_info.items())[:3]:
+                st.metric(key, val)
         with col2:
-            for k in ["Panels", "Inverters"]:
-                st.metric(k, plant_info[k])
-            st.metric("Date Range", f"{start_date} to {end_date}")
+            for key, val in list(plant_info.items())[3:]:
+                st.metric(key, val)
 
-    # ----- Performance -----
-    elif section == "Performance":
-        st.title("Performance Comparison")
-        if not df_sel.empty:
-            actual_pivot = df_sel.pivot_table(index=df_sel.index, columns="Inverter", values="P_ac")
-            dev_pivot = df_sel.pivot_table(index=df_sel.index, columns="Inverter", values="Deviation (%)")
+        st.markdown("### Today's Generation (Actual AC Power)")
+        today_data = df_all[df_all["timestamp"].dt.date == datetime.now().date()]
+        if not today_data.empty:
+            fig_today = px.line(today_data, x='timestamp', y='P_ac', title='AC Power Output (Today)')
+            st.plotly_chart(fig_today, use_container_width=True)
+        else:
+            st.info("No data available for today.")
 
-            st.subheader("Actual AC Power Comparison")
-            st.line_chart(actual_pivot)
+    # ---------- Performance ----------
+    elif selected_section == "Performance":
+        st.subheader("Performance Analysis")
+        last_3days = df_all[df_all["timestamp"] > datetime.now() - timedelta(days=3)]
 
-            st.subheader("Deviation (%) Comparison")
-            st.line_chart(dev_pivot)
+        if not last_3days.empty:
+            col1, col2 = st.columns(2)
+            pr = (last_3days['P_ac'].sum() / (last_3days['Irradiance'].sum() * PDC0 / 1000)) * 100
+            cuf = (last_3days['P_ac'].sum() / (PDC0 * 3 * 24)) * 100
+            col1.metric("Performance Ratio (PR)", f"{pr:.2f} %")
+            col2.metric("CUF", f"{cuf:.2f} %")
 
-    # ----- Digital Twin -----
-    elif section == "Digital Twin":
-        st.title("Digital Twin – Modeled vs Actual Output")
+            st.markdown("### Expected vs Actual AC Power")
+            fig_perf = px.line(last_3days, x='timestamp', y=['Expected_AC_Power', 'P_ac'],
+                               labels={'value': 'AC Power (W)', 'timestamp': 'Time'},
+                               title="Expected vs Actual AC Power")
+            st.plotly_chart(fig_perf, use_container_width=True)
+        else:
+            st.info("Not enough data for performance analysis.")
 
-        for name in selected:
-            st.subheader(f"Inverter: {name}")
-            df_i = df_sel[df_sel["Inverter"] == name]
-            fig = px.line(df_i, x=df_i.index, y=["P_ac", "Expected_AC_Power"], title="Expected vs Actual AC Power")
-            st.plotly_chart(fig, use_container_width=True)
+    # ---------- Digital Twin ----------
+    elif selected_section == "Digital Twin":
+        st.subheader("Digital Twin Simulation")
+        twin_data = df_all[df_all["timestamp"] > datetime.now() - timedelta(hours=6)]
 
-            fig_dev = px.line(df_i, x=df_i.index, y="Deviation (%)", title="Deviation (%) Over Time")
+        if not twin_data.empty:
+            st.markdown("### Live Overlay: Actual vs Model Output")
+            fig_twin = px.line(twin_data, x='timestamp', y=['Expected_AC_Power', 'P_ac'],
+                               title='Digital Twin Live Output')
+            st.plotly_chart(fig_twin, use_container_width=True)
+
+            deviation = (twin_data['P_ac'] - twin_data['Expected_AC_Power']) / twin_data['Expected_AC_Power'] * 100
+            fig_dev = px.line(x=twin_data['timestamp'], y=deviation, title="Deviation % (Actual vs Expected)")
+            fig_dev.update_yaxes(title_text="Deviation (%)")
             st.plotly_chart(fig_dev, use_container_width=True)
+        else:
+            st.info("No recent data available for digital twin simulation.")
 
-    # ----- Alerts -----
-    elif section == "Alerts":
-        st.title("Alert Summary")
+    # ---------- Alerts ----------
+    elif selected_section == "Alerts":
+        st.subheader("Alert & Fault Logs")
         alerts = df_all[df_all["Status"] == "Alert"]
-        st.subheader(f"Total Alerts: {len(alerts)}")
-
+        st.warning(f"{len(alerts)} alert(s) detected.")
         if not alerts.empty:
-            st.dataframe(alerts[["Inverter", "P_ac", "Expected_AC_Power", "Deviation (%)"]])
-            fig = px.scatter(alerts, x=alerts.index, y="Deviation (%)", color="Inverter", title="Alert Events")
-            st.plotly_chart(fig, use_container_width=True)
+            st.dataframe(alerts[['timestamp', 'Inverter', 'P_ac', 'Expected_AC_Power', 'Deviation (%)']].tail(30))
         else:
             st.success("No alerts detected.")
 
-    # ----- KPIs -----
+    # ---------- Predictions ----------
+    elif selected_section == "Predictions":
+        st.subheader("Predictive Maintenance")
+        pred_data = df_all[df_all['timestamp'] > datetime.now() - timedelta(days=3)]
+        pred_data['predicted_deviation'] = (pred_data['Expected_AC_Power'] - pred_data['P_ac']) / pred_data['Expected_AC_Power']
+        st.line_chart(pred_data['predicted_deviation'])
+
+        st.markdown("**Maintenance Suggestion:**")
+        st.info("Check Inverter(s) with consistently high deviation >5% during peak hours.")
+
+    # ---------- Footer ----------
     st.markdown("---")
-    st.subheader("Key Performance Indicators")
-    kpi_list = []
-    dt_hours = (processed[0].index[1] - processed[0].index[0]).total_seconds() / 3600
-    for name in inverter_names:
-        df_i = df_all[df_all["Inverter"] == name]
-        actual_energy = df_i["P_ac"].sum() * dt_hours
-        theoretical_energy = PDC0 * (df_i["Irradiance"] / 1000).sum() * dt_hours
-        total_time = len(df_i) * dt_hours
-        PR = actual_energy / theoretical_energy if theoretical_energy > 0 else np.nan
-        CUF = actual_energy / (PDC0 * total_time) if total_time > 0 else np.nan
-        kpi_list.append({
-            "Inverter": name,
-            "PR": round(PR, 3),
-            "CUF": round(CUF, 3)
-        })
-    st.dataframe(pd.DataFrame(kpi_list).set_index("Inverter"))
+    st.caption("Developed by Pratik Kewat | Digital Twin Dashboard v1.0")
 
 else:
-    st.info("Please upload inverter CSV file(s) using the sidebar.")
+    st.info("Please upload one or more inverter CSV files to begin.")
