@@ -3,19 +3,16 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from pvlib.pvsystem import PVSystem
-from pvlib.location import Location
-from pvlib.modelchain import ModelChain
 
 # ----- Streamlit Page Setup -----
 st.set_page_config(layout="wide")
-st.title("Digital Twin – Inverter Performance Monitoring")
+st.title("Digital Twin – Inverter Performance Monitoring (PVLib‑free)")
 
 # ----- File Upload Section -----
 uploaded_file = st.file_uploader("Upload Inverter CSV File", type="csv")
 
 if uploaded_file is not None:
-    # Load and index
+    # Load & index
     df = pd.read_csv(uploaded_file, parse_dates=["Time"]).set_index("Time")
 
     # Check required columns
@@ -23,31 +20,20 @@ if uploaded_file is not None:
     if not all(col in df.columns for col in required_cols):
         st.error("Missing required columns. Required: " + ", ".join(required_cols))
     else:
-        # ----- PVLib Model Setup with AOI/Spectral Disabled -----
-        location = Location(latitude=23.83, longitude=78.72, tz="Asia/Kolkata")
-        system = PVSystem(
-            surface_tilt=20,
-            surface_azimuth=180,
-            module_parameters={"pdc0": 6000, "gamma_pdc": -0.004},
-            inverter_parameters={"pdc0": 6000},
-        )
-        mc = ModelChain(
-            system,
-            location,
-            aoi_model=None,        # skip AOI losses
-            spectral_model=None    # skip spectral losses
-        )
+        # ----- Simple expected AC power model -----
+        # Pdc0: rated DC capacity (W)
+        # gamma: temp coefficient (per °C)
+        # inverter_eff: assumed constant
+        Pdc0 = 6000       
+        gamma = -0.004    
+        inverter_eff = 0.95
 
-        # Prepare weather input
-        weather = pd.DataFrame({
-            "ghi": df["Irradiance"],
-            "temp_air": df["Module_Temp"],
-            "wind_speed": 1
-        }, index=df.index)
-
-        # Run the model
-        mc.run_model(weather)
-        df["Expected_AC_Power"] = mc.ac.fillna(0)
+        df["Expected_AC_Power"] = (
+            Pdc0
+            * (df["Irradiance"] / 1000)
+            * (1 + gamma * (df["Module_Temp"] - 25))
+            * inverter_eff
+        )
 
         # ----- Deviation & Status -----
         df["Deviation (%)"] = 100 * (
