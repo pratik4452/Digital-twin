@@ -28,11 +28,13 @@ if uploaded_file is not None:
             module_parameters={"pdc0": 6000, "gamma_pdc": -0.004},
             inverter_parameters={"pdc0": 6000}
         )
+                # disable AOI (and spectral) so PVLib won’t error on missing parameters
         mc = ModelChain(
-    system,
-    location,
-    aoi_model=None,        # skip AOI losses
-    spectral_model=None    # (optional) skip spectral losses too
+            system,
+            location,
+            aoi_model=None,
+            spectral_model=None
+        )
 )
 
         weather = pd.DataFrame({
