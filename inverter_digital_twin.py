@@ -1,52 +1,40 @@
+# inverter_digital_twin_sidebar.py
+
 import streamlit as st
 import pandas as pd
 import numpy as np
-import json
-from io import BytesIO
+import plotly.express as px
+from datetime import datetime
 
 # ----- Constants -----
 PDC0 = 6000         # Rated DC capacity per inverter (W)
 GAMMA = -0.004      # Temp coefficient of power (per °C)
 INV_EFF = 0.95      # Assumed inverter efficiency
 
-# ----- Streamlit Page Setup -----
-st.set_page_config(layout="wide")
-st.title("Digital Twin – Multi‑Inverter Performance Monitoring")
+# ----- Streamlit Config -----
+st.set_page_config(page_title="Digital Twin – Inverter Performance", layout="wide")
 
-# ----- Optional Uploads -----
-with st.sidebar.expander("Optional: Upload Metadata & Weather"):
-    metadata_file = st.file_uploader("Plant Metadata (JSON)", type="json")
-    weather_file = st.file_uploader("Weather Data CSV", type="csv")
+# ----- Sidebar Navigation -----
+st.sidebar.title("Digital Twin Dashboard")
+section = st.sidebar.radio("Go to", ["Overview", "Performance", "Digital Twin", "Alerts"])
 
-# Display Metadata Panel
-if metadata_file:
-    try:
-        meta = json.load(metadata_file)
-        with st.expander("Plant Info", expanded=True):
-            st.markdown(f"**Plant Name:** {meta.get('plant_name', 'N/A')}")
-            st.markdown(f"**Location:** {meta.get('location', 'N/A')}")
-            st.markdown(f"**Capacity:** {meta.get('capacity', 'N/A')}")
-            st.markdown(f"**Inverters:** {meta.get('inverters', 'N/A')}")
-    except:
-        st.warning("Metadata JSON is invalid.")
-
-# Optional Weather Preview
-if weather_file:
-    try:
-        weather_df = pd.read_csv(weather_file)
-        st.expander("Preview Weather Data").dataframe(weather_df.head())
-    except:
-        st.warning("Weather file is not valid.")
-
-# ----- Main File Upload (Multiple Inverters) -----
-uploaded_files = st.file_uploader(
+# ----- File Upload (in Sidebar) -----
+uploaded_files = st.sidebar.file_uploader(
     "Upload Inverter CSV File(s)",
     type="csv",
     accept_multiple_files=True
 )
 
+# ----- Plant Info -----
+plant_info = {
+    "Plant Name": "Sunil Kumar Dubey",
+    "Location": "Village Deori, Sagar, MP",
+    "Capacity": "2.0 MW AC / 2.4 MWp DC",
+    "Panels": "Pahal TOPCon 600 Wp (G2G)",
+    "Inverters": "Sungrow (String Type)"
+}
+
 if uploaded_files:
-    # Load all files into dict of DataFrames
     dfs = {}
     for file in uploaded_files:
         try:
@@ -54,37 +42,33 @@ if uploaded_files:
             df = df.set_index("Time")
             required = ["Irradiance", "Module_Temp", "V_dc", "I_dc", "P_ac"]
             if not all(col in df.columns for col in required):
-                st.error(f"File {file.name} is missing columns: {set(required) - set(df.columns)}")
+                st.error(f"File {file.name} missing columns: {set(required) - set(df.columns)}")
                 continue
             dfs[file.name] = df
         except Exception as e:
-            st.error(f"Error reading file {file.name}: {e}")
+            st.error(f"Error reading {file.name}: {e}")
 
     if not dfs:
         st.warning("No valid files to process.")
         st.stop()
 
-    # ----- Global Date‑Range Picker -----
     all_mins = [df.index.min().date() for df in dfs.values()]
     all_maxs = [df.index.max().date() for df in dfs.values()]
-    min_date = min(all_mins)
-    max_date = max(all_maxs)
-    start_date, end_date = st.date_input(
-        "Select date range",
+    min_date, max_date = min(all_mins), max(all_maxs)
+
+    start_date, end_date = st.sidebar.date_input(
+        "Select Date Range",
         value=(min_date, max_date),
         min_value=min_date,
         max_value=max_date
     )
-    if isinstance(start_date, tuple):
-        start_date, end_date = start_date
+    if isinstance(start_date, tuple): start_date, end_date = start_date
 
-    # Process each inverter
+    # ----- Process Data -----
     processed = []
     for name, df in dfs.items():
         df = df.loc[(df.index.date >= start_date) & (df.index.date <= end_date)].copy()
-        if df.empty:
-            continue
-
+        if df.empty: continue
         df["Expected_AC_Power"] = (
             PDC0 * (df["Irradiance"] / 1000) * (1 + GAMMA * (df["Module_Temp"] - 25)) * INV_EFF
         )
@@ -94,37 +78,69 @@ if uploaded_files:
         processed.append(df)
 
     if not processed:
-        st.warning("No data in the selected date range.")
+        st.warning("No data in selected range.")
         st.stop()
 
     df_all = pd.concat(processed)
-
-    # ----- Multi‑Inverter Comparison -----
     inverter_names = df_all["Inverter"].unique().tolist()
-    selected = st.multiselect("Select Inverters to Compare", inverter_names, default=inverter_names)
+    selected = st.sidebar.multiselect("Select Inverters", inverter_names, default=inverter_names)
 
-    if selected:
-        df_sel = df_all[df_all["Inverter"].isin(selected)]
+    df_sel = df_all[df_all["Inverter"].isin(selected)]
 
-        # Pivot for actual power
-        actual_pivot = df_sel.pivot_table(index=df_sel.index, columns="Inverter", values="P_ac")
-        if not actual_pivot.empty:
+    # ----- Overview -----
+    if section == "Overview":
+        st.title("Plant Overview")
+        col1, col2 = st.columns(2)
+        with col1:
+            for k in ["Plant Name", "Location", "Capacity"]:
+                st.metric(k, plant_info[k])
+        with col2:
+            for k in ["Panels", "Inverters"]:
+                st.metric(k, plant_info[k])
+            st.metric("Date Range", f"{start_date} to {end_date}")
+
+    # ----- Performance -----
+    elif section == "Performance":
+        st.title("Performance Comparison")
+        if not df_sel.empty:
+            actual_pivot = df_sel.pivot_table(index=df_sel.index, columns="Inverter", values="P_ac")
+            dev_pivot = df_sel.pivot_table(index=df_sel.index, columns="Inverter", values="Deviation (%)")
+
             st.subheader("Actual AC Power Comparison")
             st.line_chart(actual_pivot)
-        else:
-            st.warning("No data available for AC Power Comparison.")
 
-        # Pivot for deviation
-        dev_pivot = df_sel.pivot_table(index=df_sel.index, columns="Inverter", values="Deviation (%)")
-        if not dev_pivot.empty:
             st.subheader("Deviation (%) Comparison")
             st.line_chart(dev_pivot)
-        else:
-            st.warning("No data available for Deviation (%) Comparison.")
-    else:
-        st.warning("Please select at least one inverter to compare.")
 
-    # ----- KPI Table -----
+    # ----- Digital Twin -----
+    elif section == "Digital Twin":
+        st.title("Digital Twin – Modeled vs Actual Output")
+
+        for name in selected:
+            st.subheader(f"Inverter: {name}")
+            df_i = df_sel[df_sel["Inverter"] == name]
+            fig = px.line(df_i, x=df_i.index, y=["P_ac", "Expected_AC_Power"], title="Expected vs Actual AC Power")
+            st.plotly_chart(fig, use_container_width=True)
+
+            fig_dev = px.line(df_i, x=df_i.index, y="Deviation (%)", title="Deviation (%) Over Time")
+            st.plotly_chart(fig_dev, use_container_width=True)
+
+    # ----- Alerts -----
+    elif section == "Alerts":
+        st.title("Alert Summary")
+        alerts = df_all[df_all["Status"] == "Alert"]
+        st.subheader(f"Total Alerts: {len(alerts)}")
+
+        if not alerts.empty:
+            st.dataframe(alerts[["Inverter", "P_ac", "Expected_AC_Power", "Deviation (%)"]])
+            fig = px.scatter(alerts, x=alerts.index, y="Deviation (%)", color="Inverter", title="Alert Events")
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.success("No alerts detected.")
+
+    # ----- KPIs -----
+    st.markdown("---")
+    st.subheader("Key Performance Indicators")
     kpi_list = []
     dt_hours = (processed[0].index[1] - processed[0].index[0]).total_seconds() / 3600
     for name in inverter_names:
@@ -139,28 +155,7 @@ if uploaded_files:
             "PR": round(PR, 3),
             "CUF": round(CUF, 3)
         })
-    kpi_df = pd.DataFrame(kpi_list).set_index("Inverter")
-    st.subheader("Key Performance Indicators")
-    st.dataframe(kpi_df)
-
-    # ----- Alerts Table -----
-    alerts = df_all[df_all["Status"] == "Alert"]
-    st.subheader(f"Total Alerts: {len(alerts)}")
-    if not alerts.empty:
-        st.dataframe(alerts[["Inverter", "P_ac", "Expected_AC_Power", "Deviation (%)"]])
-    else:
-        st.success("No alerts in selected period.")
-
-    # ----- Download Processed Data -----
-    def convert_df(df):
-        return df.to_csv(index=True).encode("utf-8")
-
-    csv_all = convert_df(df_all)
-    st.download_button("Download Full Processed Data", csv_all, "inverter_data_processed.csv", "text/csv")
-
-    if not alerts.empty:
-        csv_alerts = convert_df(alerts)
-        st.download_button("Download Alerts Only", csv_alerts, "inverter_alerts.csv", "text/csv")
+    st.dataframe(pd.DataFrame(kpi_list).set_index("Inverter"))
 
 else:
-    st.info("Please upload one or more inverter CSV files to begin.")
+    st.info("Please upload inverter CSV file(s) using the sidebar.")
