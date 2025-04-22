@@ -28,7 +28,12 @@ if uploaded_file is not None:
             module_parameters={"pdc0": 6000, "gamma_pdc": -0.004},
             inverter_parameters={"pdc0": 6000}
         )
-        mc = ModelChain(system, location)
+        mc = ModelChain(
+    system,
+    location,
+    aoi_model=None,        # skip AOI losses
+    spectral_model=None    # (optional) skip spectral losses too
+)
 
         weather = pd.DataFrame({
             'ghi': df["Irradiance"],
