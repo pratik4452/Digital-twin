@@ -24,13 +24,20 @@ if uploaded_files:
     # Load all files into dict of DataFrames
     dfs = {}
     for file in uploaded_files:
-        df = pd.read_csv(file, parse_dates=["Time"]).set_index("Time")
-        # validate
-        required = ["Irradiance", "Module_Temp", "V_dc", "I_dc", "P_ac"]
-        if not all(col in df.columns for col in required):
-            st.error(f"File {file.name} is missing columns: {set(required) - set(df.columns)}")
-            st.stop()
-        dfs[file.name] = df
+        try:
+            df = pd.read_csv(file, parse_dates=["Time"])
+            df = df.set_index("Time")
+            required = ["Irradiance", "Module_Temp", "V_dc", "I_dc", "P_ac"]
+            if not all(col in df.columns for col in required):
+                st.error(f"File {file.name} is missing columns: {set(required) - set(df.columns)}")
+                continue
+            dfs[file.name] = df
+        except Exception as e:
+            st.error(f"Error reading file {file.name}: {e}")
+
+    if not dfs:
+        st.warning("No valid files to process.")
+        st.stop()
 
     # ----- Global Date‑Range Picker -----
     all_mins = [df.index.min().date() for df in dfs.values()]
@@ -49,20 +56,13 @@ if uploaded_files:
     # Process each inverter
     processed = []
     for name, df in dfs.items():
-        # filter by date range
         df = df.loc[(df.index.date >= start_date) & (df.index.date <= end_date)].copy()
         if df.empty:
             continue
 
-        # expected AC power model
         df["Expected_AC_Power"] = (
-            PDC0
-            * (df["Irradiance"] / 1000)
-            * (1 + GAMMA * (df["Module_Temp"] - 25))
-            * INV_EFF
+            PDC0 * (df["Irradiance"] / 1000) * (1 + GAMMA * (df["Module_Temp"] - 25)) * INV_EFF
         )
-
-        # deviation & status
         df["Deviation (%)"] = 100 * (df["P_ac"] - df["Expected_AC_Power"]) / df["Expected_AC_Power"].replace(0, 1)
         df["Status"] = df["Deviation (%)"].apply(lambda x: "OK" if abs(x) < 10 else "Alert")
         df["Inverter"] = name
@@ -72,7 +72,6 @@ if uploaded_files:
         st.warning("No data in the selected date range.")
         st.stop()
 
-    # concatenate
     df_all = pd.concat(processed)
 
     # ----- Multi‑Inverter Comparison -----
@@ -81,22 +80,28 @@ if uploaded_files:
 
     if selected:
         df_sel = df_all[df_all["Inverter"].isin(selected)]
-        # pivot for actual power
+
+        # Pivot for actual power
         actual_pivot = df_sel.pivot_table(index=df_sel.index, columns="Inverter", values="P_ac")
-        st.subheader("Actual AC Power Comparison")
-        st.line_chart(actual_pivot)
+        if not actual_pivot.empty:
+            st.subheader("Actual AC Power Comparison")
+            st.line_chart(actual_pivot)
+        else:
+            st.warning("No data available for AC Power Comparison.")
 
-        # pivot for deviation
+        # Pivot for deviation
         dev_pivot = df_sel.pivot_table(index=df_sel.index, columns="Inverter", values="Deviation (%)")
-        st.subheader("Deviation (%) Comparison")
-        st.line_chart(dev_pivot)
+        if not dev_pivot.empty:
+            st.subheader("Deviation (%) Comparison")
+            st.line_chart(dev_pivot)
+        else:
+            st.warning("No data available for Deviation (%) Comparison.")
+    else:
+        st.warning("Please select at least one inverter to compare.")
 
-    # ----- Basic KPI Calculations -----
+    # ----- KPI Table -----
     kpi_list = []
-    # time step in hours (assumes uniform spacing)
-    sample = processed[0]
-    dt_hours = (sample.index[1] - sample.index[0]).total_seconds() / 3600
-
+    dt_hours = (processed[0].index[1] - processed[0].index[0]).total_seconds() / 3600
     for name in inverter_names:
         df_i = df_all[df_all["Inverter"] == name]
         actual_energy = df_i["P_ac"].sum() * dt_hours
@@ -109,7 +114,6 @@ if uploaded_files:
             "PR": round(PR, 3),
             "CUF": round(CUF, 3)
         })
-
     kpi_df = pd.DataFrame(kpi_list).set_index("Inverter")
     st.subheader("Key Performance Indicators")
     st.dataframe(kpi_df)
@@ -117,6 +121,9 @@ if uploaded_files:
     # ----- Alerts Table -----
     alerts = df_all[df_all["Status"] == "Alert"]
     st.subheader(f"Total Alerts: {len(alerts)}")
-    st.dataframe(alerts[["Inverter", "P_ac", "Expected_AC_Power", "Deviation (%)"]])
+    if not alerts.empty:
+        st.dataframe(alerts[["Inverter", "P_ac", "Expected_AC_Power", "Deviation (%)"]])
+    else:
+        st.success("No alerts in selected period.")
 else:
     st.info("Please upload one or more CSV files to begin.")
