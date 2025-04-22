@@ -6,27 +6,40 @@ import numpy as np
 
 # ----- Streamlit Page Setup -----
 st.set_page_config(layout="wide")
-st.title("Digital Twin – Inverter Performance Monitoring (PVLib‑free)")
+st.title("Digital Twin – Inverter Performance Monitoring")
 
 # ----- File Upload Section -----
 uploaded_file = st.file_uploader("Upload Inverter CSV File", type="csv")
 
 if uploaded_file is not None:
-    # Load & index
+    # Load CSV and set Time index
     df = pd.read_csv(uploaded_file, parse_dates=["Time"]).set_index("Time")
 
-    # Check required columns
+    # Validate required columns
     required_cols = ["Irradiance", "Module_Temp", "V_dc", "I_dc", "P_ac"]
     if not all(col in df.columns for col in required_cols):
         st.error("Missing required columns. Required: " + ", ".join(required_cols))
     else:
-        # ----- Simple expected AC power model -----
-        # Pdc0: rated DC capacity (W)
-        # gamma: temp coefficient (per °C)
-        # inverter_eff: assumed constant
-        Pdc0 = 6000       
-        gamma = -0.004    
-        inverter_eff = 0.95
+        # ----- Date-Range Filter -----
+        min_date = df.index.min().date()
+        max_date = df.index.max().date()
+        start_date, end_date = st.date_input(
+            "Select date range",
+            value=(min_date, max_date),
+            min_value=min_date,
+            max_value=max_date
+        )
+        # If tuple unpacking needed
+        if isinstance(start_date, tuple):
+            start_date, end_date = start_date
+
+        # Filter df by selected dates
+        df = df.loc[(df.index.date >= start_date) & (df.index.date <= end_date)]
+
+        # ----- Simple Expected AC Power Model -----
+        Pdc0 = 6000        # Rated DC capacity (W)
+        gamma = -0.004     # Temp coefficient (per °C)
+        inverter_eff = 0.95  # Assumed inverter efficiency
 
         df["Expected_AC_Power"] = (
             Pdc0
@@ -39,6 +52,7 @@ if uploaded_file is not None:
         df["Deviation (%)"] = 100 * (
             df["P_ac"] - df["Expected_AC_Power"]
         ) / df["Expected_AC_Power"].replace(0, 1)
+
         df["Status"] = df["Deviation (%)"].apply(
             lambda x: "OK" if abs(x) < 10 else "Alert"
         )
@@ -50,7 +64,7 @@ if uploaded_file is not None:
         st.subheader("Deviation (%)")
         st.bar_chart(df["Deviation (%)"])
 
-        # Show alerts
+        # ----- Alerts Table -----
         alerts = df[df["Status"] == "Alert"]
         st.subheader(f"Alerts Detected: {len(alerts)}")
         st.dataframe(alerts[["P_ac", "Expected_AC_Power", "Deviation (%)"]])
